@@ -1,8 +1,11 @@
 {
     "idf.adapterTargetName": "esp32c6",
-    "idf.portWin": "COM5",
+    "idf.portWin": "COM7",
     "idf.flashType": "UART",
     "files.associations": {
         "esp_zigbee_zcl_common.h": "c"
-    }
+    },
+    "idf.openOcdConfigs": [
+        "board/esp32c6-ftdi.cfg"
+    ]
 }
