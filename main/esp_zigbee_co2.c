@@ -18,6 +18,7 @@
 #include "iot_button.h"
 #include <time.h>
 #include <sys/time.h>
+#include "ha/esp_zigbee_ha_standard.h"
 
 /*------ Clobal definitions -----------*/
 static char manufacturer[16], model[16], firmware_version[16];
@@ -298,7 +299,6 @@ static void reportAttribute(uint8_t endpoint, uint16_t clusterID, uint16_t attri
         .address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT,
         .clusterID = clusterID,
         .attributeID = attributeID,
-        .cluster_role = ESP_ZB_ZCL_CLUSTER_SERVER_ROLE,
     };
     esp_zb_zcl_attr_t *value_r = esp_zb_zcl_get_attribute(endpoint, clusterID, ESP_ZB_ZCL_CLUSTER_SERVER_ROLE, attributeID);
     memcpy(value_r->data_p, value, value_length);
@@ -384,19 +384,19 @@ static esp_err_t zb_read_attr_resp_handler(const esp_zb_zcl_cmd_read_attr_resp_m
     ESP_RETURN_ON_FALSE(message->info.status == ESP_ZB_ZCL_STATUS_SUCCESS, ESP_ERR_INVALID_ARG, TAG, "Received message: error status(%d)",
                         message->info.status);
     ESP_LOGI(TAG, "Read attribute response: status(%d), cluster(0x%x), attribute(0x%x), type(0x%x), value(%d)", message->info.status,
-             message->info.cluster, message->attribute.id, message->attribute.data.type,
-             message->attribute.data.value ? *(uint8_t *)message->attribute.data.value : 0);
+             message->info.cluster, message->variables->attribute.id, message->variables->attribute.data.type,
+             message->variables->attribute.data.value ? *(uint8_t *)message->variables->attribute.data.value : 0);
     if (message->info.dst_endpoint == SENSOR_ENDPOINT) {
         switch (message->info.cluster) {
         case ESP_ZB_ZCL_CLUSTER_ID_TIME:
-            ESP_LOGI(TAG, "Server time recieved %lu", *(uint32_t*) message->attribute.data.value);
+            ESP_LOGI(TAG, "Server time recieved %lu", *(uint32_t*) message->variables->attribute.data.value);
             struct timeval tv;
-            tv.tv_sec = *(uint32_t*) message->attribute.data.value + 946684800 - 1080; //after adding OTA cluster time shifted to 1080 sec... strange issue ... 
+            tv.tv_sec = *(uint32_t*) message->variables->attribute.data.value + 946684800 - 1080; //after adding OTA cluster time shifted to 1080 sec... strange issue ... 
             settimeofday(&tv, NULL);
             time_updated = true;
             break;
         default:
-            ESP_LOGI(TAG, "Message data: cluster(0x%x), attribute(0x%x)  ", message->info.cluster, message->attribute.id);
+            ESP_LOGI(TAG, "Message data: cluster(0x%x), attribute(0x%x)  ", message->info.cluster, message->variables->attribute.id);
         }
     }
     return ESP_OK;
@@ -423,7 +423,9 @@ void read_server_time()
 {
     esp_zb_zcl_read_attr_cmd_t read_req;
     read_req.address_mode = ESP_ZB_APS_ADDR_MODE_16_ENDP_PRESENT;
-    read_req.attributeID = ESP_ZB_ZCL_ATTR_TIME_LOCAL_TIME_ID;
+    uint16_t attributes[] = {ESP_ZB_ZCL_ATTR_TIME_TIME_ID};
+    read_req.attr_number =  sizeof(attributes) / sizeof(attributes[0]);
+    read_req.attr_field = attributes;
     read_req.clusterID = ESP_ZB_ZCL_CLUSTER_ID_TIME;
     read_req.zcl_basic_cmd.dst_endpoint = 1;
     read_req.zcl_basic_cmd.src_endpoint = 1;
@@ -544,13 +546,12 @@ static void esp_zb_task(void *pvParameters)
     };
     esp_zb_attribute_list_t *esp_zb_ota_client_cluster = esp_zb_ota_cluster_create(&ota_cluster_cfg);
     /** add client parameters to ota client cluster */
-    esp_zb_ota_upgrade_client_parameter_t ota_client_parameter_config = {
-        .query_timer = ESP_ZB_ZCL_OTA_UPGRADE_QUERY_TIMER_COUNT_DEF,          /* time interval for query next image request command */
-        .hardware_version = OTA_UPGRADE_HW_VERSION,                           /* version of hardware */
-        .max_data_size = OTA_UPGRADE_MAX_DATA_SIZE,                           /* maximum data size of query block image */
+    esp_zb_zcl_ota_upgrade_client_variable_t ota_client_parameter_config = {
+        .timer_query = ESP_ZB_ZCL_OTA_UPGRADE_QUERY_TIMER_COUNT_DEF,
+        .max_data_size = OTA_UPGRADE_MAX_DATA_SIZE,
+        .hw_version = OTA_UPGRADE_HW_VERSION,
     };
-    void *ota_client_parameters = esp_zb_ota_client_parameter(&ota_client_parameter_config);
-    esp_zb_ota_cluster_add_attr(esp_zb_ota_client_cluster, ESP_ZB_ZCL_ATTR_OTA_UPGRADE_CLIENT_PARAMETER_ID, ota_client_parameters);
+    esp_zb_ota_cluster_add_attr(esp_zb_ota_client_cluster, ESP_ZB_ZCL_ATTR_OTA_UPGRADE_CLIENT_DATA_ID, (void *)&ota_client_parameter_config);
 
     /* Create full cluster list enabled on device */
     esp_zb_cluster_list_t *esp_zb_cluster_list = esp_zb_zcl_cluster_list_create();
@@ -564,7 +565,13 @@ static void esp_zb_task(void *pvParameters)
     esp_zb_cluster_list_add_ota_cluster(esp_zb_cluster_list, esp_zb_ota_client_cluster, ESP_ZB_ZCL_CLUSTER_CLIENT_ROLE);
 
     esp_zb_ep_list_t *esp_zb_ep_list = esp_zb_ep_list_create();
-    esp_zb_ep_list_add_ep(esp_zb_ep_list, esp_zb_cluster_list, SENSOR_ENDPOINT, ESP_ZB_AF_HA_PROFILE_ID, ESP_ZB_HA_SIMPLE_SENSOR_DEVICE_ID);
+    esp_zb_endpoint_config_t endpoint_config = {
+        .endpoint = SENSOR_ENDPOINT,
+        .app_profile_id = ESP_ZB_AF_HA_PROFILE_ID,
+        .app_device_id = ESP_ZB_HA_SIMPLE_SENSOR_DEVICE_ID,
+        .app_device_version = 0,
+    };
+    esp_zb_ep_list_add_ep(esp_zb_ep_list, esp_zb_cluster_list, endpoint_config);
 
     /* END */
     esp_zb_device_register(esp_zb_ep_list);
